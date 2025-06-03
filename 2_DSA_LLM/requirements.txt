@@ -1,0 +1,9 @@
+langchain
+langchainhub
+langchain-core
+langchain-groq
+langchain-community
+langgraph
+google-search-results 
+numexpr 
+python-dotenv

@@ -1,0 +1,21 @@
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100),
+    email VARCHAR(100),
+    age INTEGER,
+    city VARCHAR(50)
+);
+
+
+INSERT INTO users (name, email, age, city) VALUES
+    ('Aisha Bello', 'aisha@example.com', 28, 'Lagos'),
+    ('James Okoro', 'james@example.com', 35, 'Abuja'),
+    ('Nkechi Obi', 'nkechi@example.com', 22, 'Enugu'),
+    ('Chinedu Oko', 'chinedu@example.com', 30, 'Owerri'),
+    ('Fatima Ahmed', 'fatima@example.com', 26, 'Kano'),
+    ('Ibrahim Musa', 'ibrahim@example.com', 40, 'Kaduna'),
+    ('Blessing Udo', 'blessing@example.com', 32, 'Uyo'),
+    ('Tolu Adebayo', 'tolu@example.com', 27, 'Ibadan'),
+    ('Ngozi Chika', 'ngozi@example.com', 24, 'Asaba'),
+    ('Emeka Eze', 'emeka@example.com', 29, 'Onitsha');
