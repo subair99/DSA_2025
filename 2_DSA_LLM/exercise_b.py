@@ -1,39 +1,15 @@
-
 import os
-import sys
-
-print(f"--- Environment Check ---")
-print(f"Current working directory: {os.getcwd()}")
-print(f"Python executable: {sys.executable}")
-print(f"Python version: {sys.version}")
-print(f"sys.path (import search paths):")
-for p in sys.path:
-    print(f"  - {p}")
-print(f"-------------------------")
-
-
-import re
 import getpass
-import warnings
-import operator
 from dotenv import load_dotenv
-from typing import TypedDict, List, Tuple, Annotated, Union
-
-# LangChain and LangGraph imports
-from langchain_groq import ChatGroq
-from langchain.tools import tool, Tool
-from langchain_community.utilities import SQLDatabase
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
-from langchain_core.agents import AgentAction, AgentFinish
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import ToolInvocation
-from langgraph.prebuilt import ToolExecutor
-from langgraph.graph import StateGraph, END
+import sys
+import re
+import warnings
 
 # --- Warning Suppression ---
 # This is the most effective way to suppress the specific LangChain deprecation warning
+# It targets the exact message string.
 warnings.filterwarnings("ignore", message=".*LangChain agents will continue to be supported.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning) # Catch other DeprecationWarnings too
 
 
 # Load environment variables from .env file
@@ -44,8 +20,7 @@ def initialize_groq_llm():
     """Initialize GROQ LLM with error handling and model fallback."""
     
     try:
-        # ChatGroq is the LLM client, not a LangGraph specific import here
-        pass 
+        from langchain_groq import ChatGroq
     except ImportError:
         print("❌ langchain_groq not installed. Run: pip install langchain-groq")
         return None
@@ -101,12 +76,19 @@ if llm is None:
 print("✅ Successfully imported LLM from model")
 
 # --- SQLite Connection Setup ---
+from langchain.tools import tool, Tool
+from langchain.agents import initialize_agent, AgentType
+from langchain_community.utilities import SQLDatabase
+
+# Get SQLite database file path from environment variables
 sqlite_db_file = os.getenv("DATABASE") # Get the DB file name from .env
 
 if not sqlite_db_file:
     print("❌ DATABASE environment variable not set. Cannot connect to SQLite database.")
     sys.exit(1)
 
+# Construct the SQLite URI. Langchain's SQLDatabase expects this format for SQLite.
+# This assumes the database file is in the same directory as the script.
 sqlite_uri = f"sqlite:///{sqlite_db_file}"
 
 try:
@@ -119,6 +101,7 @@ except Exception as e:
 
 # --- Tool Definitions ---
 
+# Helper function to clean and run SQL queries
 def clean_and_run_sql(query: str) -> str:
     """Cleans an SQL query string and executes it against the database.
     Returns a string representation of the results or an error message.
@@ -147,13 +130,15 @@ def clean_and_run_sql(query: str) -> str:
         return f"SQL execution error: {str(e)} for query: {query}"
 
 
+# Tool 1: Run SQL Query
 sql_tool = Tool(
-    name="SQL_Query_Executor", # Renamed for clarity in tool calling
+    name="SQL Query Executor",
     func=clean_and_run_sql,
     description="Executes SQL or POSTGRES queries and retrieves results. Input should be a complete and valid SQL query string (e.g., 'SELECT * FROM users;')."
 )
 
 
+# Tool 2: Query DB and write to file
 @tool
 def WriteQueryResultToFile(input_string: str) -> str:
     """
@@ -165,6 +150,7 @@ def WriteQueryResultToFile(input_string: str) -> str:
     """
     filename = "db_result.txt"
     try:
+        # Extract the SQL query from the input_string
         match = re.search(r"SQL:\s*(SELECT.*)", input_string, re.IGNORECASE | re.DOTALL)
         if not match:
             return "Error: Input to WriteQueryResultToFile must start with 'SQL:' followed by the query."
@@ -173,22 +159,26 @@ def WriteQueryResultToFile(input_string: str) -> str:
         
         result = clean_and_run_sql(sql_query)
         
+        # Determine the output directory as the same directory as the SQLite database
         output_dir = os.path.dirname(os.path.abspath(sqlite_db_file))
         os.makedirs(output_dir, exist_ok=True)
         
+        # Write result to file
         file_path = os.path.join(output_dir, filename)
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"The number of users is: {result}")
+            f.write(f"The number of users is: {result}") # Adjusted the output format here
             
         return f"Query result successfully written to {file_path}. Result: {result}"
     except Exception as e:
         return f"Failed to write query result: {str(e)}"
 
 
+# Tool 3: Read a file
 @tool
 def ReadFile(file_name: str) -> str:
     """Reads the contents of a file. Input should be the exact file name (e.g., 'report.txt')."""
     try:
+        # Determine the base directory for file operations
         base_dir = os.path.dirname(os.path.abspath(sqlite_db_file))
         path = os.path.join(base_dir, file_name)
         
@@ -203,196 +193,34 @@ def ReadFile(file_name: str) -> str:
 # List of tools for the agent
 tools = [sql_tool, WriteQueryResultToFile, ReadFile]
 
-# Initialize ToolExecutor with all tools
-tool_executor = ToolExecutor(tools)
 
-# --- LangGraph Agent State Definition ---
-# This defines the state schema for our graph.
-# 'intermediate_steps' is where (AgentAction, Observation) pairs will be stored.
-# `operator.add` means new items returned for this key will be appended.
-class AgentState(TypedDict):
-    input: str
-    chat_history: List[BaseMessage]
-    intermediate_steps: Annotated[List[Tuple[AgentAction, str]], operator.add]
-    agent_outcome: Union[AgentAction, AgentFinish, None] # To hold the LLM's decision
-
-# --- LangGraph Nodes ---
-
-# 1. Agent Node (Calls LLM to decide next action)
-def run_agent(state: AgentState) -> dict:
-    """
-    Node that runs the LLM to determine the next action (tool call or final answer).
-    Parses the LLM's ReAct-style output.
-    """
-    current_input = state["input"]
-    chat_history = state.get("chat_history", [])
-    intermediate_steps = state.get("intermediate_steps", [])
-
-    # Format tools for the LLM prompt
-    tool_names = ", ".join([t.name for t in tools])
-    tool_descriptions = "\n".join([f"{t.name}: {t.description}" for t in tools])
-
-    # Format intermediate steps into a ReAct scratchpad
-    agent_scratchpad = ""
-    if intermediate_steps:
-        # LangGraph appends (AgentAction, Observation) tuples
-        formatted_steps = []
-        for action, observation in intermediate_steps:
-            formatted_steps.append(f"Thought: {action.log.strip()}\nObservation: {observation.strip()}")
-        agent_scratchpad = "\n".join(formatted_steps)
-
-    # ReAct prompt template (mimicking ZERO_SHOT_REACT_DESCRIPTION)
-    react_prompt = ChatPromptTemplate.from_messages([
-        ("system", (
-            "You are a helpful AI assistant. You have access to the following tools: {tool_names}\n"
-            "{tool_descriptions}\n"
-            "Answer the user's question by making use of the available tools. "
-            "If you are asked to write a query result to a file, ensure you use the WriteQueryResultToFile tool, "
-            "and the input should be 'SQL: <your_sql_query>'. If you are asked to read a file, use the ReadFile tool. "
-            "Strictly follow the Thought/Action/Action Input/Observation format. "
-            "If you have the final answer, output it in the 'Final Answer:' format."
-            "\n\nBegin!"
-        )),
-        MessagesPlaceholder("chat_history"), # For conversational memory
-        ("user", "{input}"),
-        ("user", "{agent_scratchpad}"), # Agent's internal monologue
-    ])
-
-    # Construct the full prompt
-    full_prompt = react_prompt.format_messages(
-        input=current_input,
-        tool_names=tool_names,
-        tool_descriptions=tool_descriptions,
-        chat_history=chat_history,
-        agent_scratchpad=agent_scratchpad
-    )
-    
-    # Invoke the LLM
-    llm_response = llm.invoke(full_prompt)
-    response_content = llm_response.content
-
-    print(f"\n--- LLM Response (Run Agent Node) ---\n{response_content}\n-----------------------------------\n")
-
-    # Parse LLM's ReAct output
-    action_match = re.search(r"Action:\s*(.*?)\nAction Input:\s*(.*)", response_content, re.DOTALL)
-    final_answer_match = re.search(r"Final Answer:\s*(.*)", response_content, re.DOTALL)
-
-    if action_match:
-        tool_name = action_match.group(1).strip()
-        tool_input = action_match.group(2).strip().strip('"') # Remove quotes if any
-        log = response_content
-        action = AgentAction(tool=tool_name, tool_input=tool_input, log=log)
-        return {"agent_outcome": action}
-    elif final_answer_match:
-        final_answer = final_answer_match.group(1).strip()
-        finish = AgentFinish(return_values={"output": final_answer}, log=response_content)
-        return {"agent_outcome": finish}
-    else:
-        # Fallback for malformed LLM output: treat as a final answer
-        print(f"⚠️ Warning: LLM output did not match ReAct format. Treating as final answer.")
-        finish = AgentFinish(return_values={"output": response_content}, log=response_content)
-        return {"agent_outcome": finish}
-
-# 2. Tool Node (Executes the tool identified by the agent)
-def execute_tools(state: AgentState) -> dict:
-    """
-    Node that executes the tool specified by the agent_outcome.
-    Updates the intermediate_steps with the tool's observation.
-    """
-    agent_action = state["agent_outcome"] # Get the action from the previous node's output
-    
-    # Prepare ToolInvocation for the ToolExecutor
-    tool_invocation = ToolInvocation(tool=agent_action.tool, tool_input=agent_action.tool_input)
-    
-    # Execute the tool
-    try:
-        observation = tool_executor.invoke(tool_invocation)
-    except Exception as e: # Catch any error from tool execution
-        observation = f"Tool Execution Error for tool '{agent_action.tool}' with input '{agent_action.tool_input}': {str(e)}"
-        print(f"❌ {observation}")
-    
-    print(f"\n--- Tool Execution Observation ---\nTool: {agent_action.tool}\nInput: {agent_action.tool_input}\nObservation: {observation}\n----------------------------------\n")
-    
-    # Return a dictionary that will update the state.
-    # The (action, observation) pair is appended to intermediate_steps.
-    return {"intermediate_steps": [(agent_action, observation)]}
-
-# --- LangGraph Graph Definition ---
-
-# Define the workflow graph
-workflow = StateGraph(AgentState)
-
-# Add nodes to the graph
-workflow.add_node("agent", run_agent)        # The LLM decision-making node
-workflow.add_node("tools", execute_tools)    # The tool execution node
-
-# Set the entry point of the graph
-workflow.set_entry_point("agent")
-
-# Define conditional edges based on the agent's outcome
-def route_agent_outcome(state: AgentState) -> str:
-    """
-    Conditional edge function to determine the next step in the graph
-    based on whether the LLM decided to call a tool or provide a final answer.
-    """
-    if isinstance(state["agent_outcome"], AgentFinish):
-        return END # If it's a final answer, end the graph
-    else:
-        return "tools" # If it's a tool action, go to the 'tools' node
-
-# Add the conditional edge from the 'agent' node
-workflow.add_conditional_edges(
-    "agent",                 # Source node
-    route_agent_outcome,     # Function to determine next node
-    {
-        END: END,            # If route_agent_outcome returns END, the graph finishes
-        "tools": "tools"     # If route_agent_outcome returns "tools", transition to the 'tools' node
-    }
+# Agent setup
+agent = initialize_agent(
+    tools=tools,
+    llm=llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    verbose=False,
+    handle_parsing_errors=True
 )
 
-# After the 'tools' node, always transition back to the 'agent' node
-# for the LLM to process the observation and decide the next step (ReAct loop).
-workflow.add_edge("tools", "agent")
-
-# Compile the graph into an executable application
-app = workflow.compile()
 
 # --- Example Usage ---
 if __name__ == "__main__":
-    print("\n--- Starting LangGraph Agent Execution ---")
+    print("\n--- Starting Agent Execution ---")
 
     try:
-        # Initial state for the graph.
-        # chat_history and intermediate_steps should start empty for a new query.
-        initial_state = {
-            "input": "Find out how many users are in the database and write the result to a file. The SQL query to count users is 'SELECT COUNT(*) FROM users;'. Use the WriteQueryResultToFile tool with the format 'SQL: <your_sql_query>'.",
-            "chat_history": [],
-            "intermediate_steps": [],
-        }
-
-        # Invoke the LangGraph application
-        # The result is the final state of the graph
-        final_state = app.invoke(initial_state)
-
-        # The final answer will be in the 'output' key of the AgentFinish object
-        # which is stored in agent_outcome when the graph ends.
-        agent_output = final_state["agent_outcome"].return_values["output"]
-        print(f"\nAgent Response for DB Query: {agent_output}")
+        db_task_prompt = "Find out how many users are in the database and write the result to a file. The SQL query to count users is 'SELECT COUNT(*) FROM users;'. Use the WriteQueryResultToFile tool with the format 'SQL: <your_sql_query>'."
+        
+        response = agent.invoke({"input": db_task_prompt})
+        print(f"Agent Response for DB Query: {response['output']}")
         
         # Optional: Read the file to confirm content. Now points to the same directory.
         print("\n--- Attempting to read the written file ---")
-        # For reading, we can directly invoke the ReadFile tool since it's a simple operation.
-        # Or, we can ask the agent again. Let's ask the agent for consistency.
-        read_file_state = app.invoke({
-            "input": "Read the file 'db_result.txt'",
-            "chat_history": [HumanMessage(content="Read the file 'db_result.txt'")], # Add to history if continuing conversation
-            "intermediate_steps": [], # Start fresh for new query
-        })
-        read_file_content = read_file_state["agent_outcome"].return_values["output"]
-        print(f"Content of db_result.txt: {read_file_content}")
+        read_file_response = agent.invoke({"input": "Read the file 'db_result.txt'"})
+        print(f"Content of db_result.txt: {read_file_response['output']}")
 
     except Exception as e:
-        print(f"\n❌ An error occurred during LangGraph agent execution: {str(e)}")
+        print(f"\n❌ An error occurred during agent execution: {str(e)}")
         print(f"Error type: {type(e).__name__}")
         
         print("\n--- Falling back to direct tool usage due to agent error ---")
@@ -400,6 +228,7 @@ if __name__ == "__main__":
             direct_db_result = clean_and_run_sql('SELECT COUNT(*) FROM users;')
             print(f"Direct DB Query (Count Users): {direct_db_result}")
             
+            # Manually write to file for fallback, in the same directory as the DB
             output_dir = os.path.dirname(os.path.abspath(sqlite_db_file))
             os.makedirs(output_dir, exist_ok=True)
             file_path = os.path.join(output_dir, "db_result.txt")
