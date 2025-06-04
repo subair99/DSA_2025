@@ -9,13 +9,12 @@ This repository contains three exercises that demonstrate the use of **LangChain
 ```
 .
 ├── __pycache__/           # Python bytecode cache
-├── filepath/              # Folder to store output files
 ├── venv/                  # Python virtual environment
 ├── .env                   # Environment variables (API keys, DB URI)
 ├── .gitignore             # Git ignore rules
-├── exercise_1.py          # Weather tool agent example
-├── exercise_2.py          # SQL database + file I/O agent example
-├── exercise_3.py          # GitHub integration agent
+├── exercise_a.py          # Weather tool agent example
+├── exercise_b.py          # SQL database + file I/O agent example
+├── exercise_c.py          # GitHub integration agent
 ├── model.py               # LLM setup using LangChain
 ├── prompt.py              # Custom prompts if any (not used currently)
 ├── README.md              # 📄 You are here!
@@ -87,9 +86,9 @@ INSERT INTO users (name, email, age, city) VALUES
 
 
 **Tools Used**:
-- `SQL Query Executor`: Executes SQL commands  
-- `ReadFile`: Reads from a file in `filepath/`  
+- `SQL Query Executor`: Executes SQL commands
 - `WriteQueryResultToFile`: Executes a query and saves the result to a file
+- `ReadFile`: Reads from a file 
 
 **Example Query**:
 ```python
@@ -120,7 +119,7 @@ INSERT INTO users (name, email, age, city) VALUES
 ### 1. Clone this repository
 
 ```bash
-git clone https://github.com/your-username/agentic-ai-exercises.git
+git clone https://github.com/subair99/DSA_2025/tree/main/2_DSA_LLM.git
 cd agentic-ai-exercises
 ```
 ## 2. Install dependencies with UV
@@ -171,14 +170,17 @@ GITHUB_TOKEN=your_github_personal_access_token
 ## 🚀 Running the Exercises
 
 ```bash
+# Run the model first
+python model.py
+
 # Run Exercise 1 – Weather Agent
-python exercise_1.py
+python exercise_a.py
 
 # Run Exercise 2 – SQL Agent + File Writer
-python exercise_2.py
+python exercise_b.py
 
-# Run Exercise 3 – GitHub API Agent
-python exercise_3.py
+# Run Exercise 3 – GitHub API Agent (In Production)
+python exercise_c.py
 ```
 
 ---
