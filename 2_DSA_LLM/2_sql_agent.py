@@ -16,64 +16,15 @@ warnings.filterwarnings("ignore", category=DeprecationWarning) # Catch other Dep
 load_dotenv()
 
 # --- LLM Initialization ---
-def initialize_groq_llm():
-    """Initialize GROQ LLM with error handling and model fallback."""
-    
-    try:
-        from langchain_groq import ChatGroq
-    except ImportError:
-        print("❌ langchain_groq not installed. Run: pip install langchain-groq")
-        return None
-    
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        print("⚠️ GROQ_API_KEY not found in environment variables")
-        api_key = getpass.getpass("Enter your GROQ_API_KEY: ")
-        if not api_key:
-            print("❌ No API key provided")
-            return None
-    
-    if not api_key.startswith("gsk_"):
-        print("⚠️ Warning: API key should start with 'gsk_'")
-    
-    models_to_try = [
-        "llama3-8b-8192", 
-        "llama3-70b-8192",
-        "gemma-7b-it",
-    ]
-    
-    for model in models_to_try:
-        try:
-            print(f"🧪 Trying model: {model}")
-            llm_instance = ChatGroq(
-                model=model,
-                temperature=0,
-                max_tokens=None,
-                timeout=60,
-                max_retries=3,
-                groq_api_key=api_key
-            )
-            # Test with a simple message to confirm connectivity
-            llm_instance.invoke("Hi")
-            print(f"✅ Success! Using model: {model}")
-            return llm_instance
-            
-        except Exception as e:
-            print(f"❌ Failed with {model}: {str(e)}")
-            continue
-    
-    print("❌ All models failed. Please check your API key and try again.")
-    return None
+try:
+    from model import llm
+    if llm is None:
+        raise ValueError("LLM initialization failed in model.py")
+    print("✅ Successfully imported LLM from model")
+except Exception as e:
+    print(f"❌ Error importing LLM: {e}")
+    exit(1)
 
-# Initialize the LLM at module level so it can be imported by the agent
-llm = initialize_groq_llm()
-
-# Exit if LLM initialization fails, as the agent cannot function without it
-if llm is None:
-    print("❌ LLM initialization failed. Exiting.")
-    sys.exit(1)
-
-print("✅ Successfully imported LLM from model")
 
 # --- SQLite Connection Setup ---
 from langchain.tools import tool, Tool
@@ -100,7 +51,6 @@ except Exception as e:
 
 
 # --- Tool Definitions ---
-
 # Helper function to clean and run SQL queries
 def clean_and_run_sql(query: str) -> str:
     """Cleans an SQL query string and executes it against the database.
@@ -149,6 +99,7 @@ def WriteQueryResultToFile(input_string: str) -> str:
     Creates the file if it does not exist.
     """
     filename = "db_result.txt"
+
     try:
         # Extract the SQL query from the input_string
         match = re.search(r"SQL:\s*(SELECT.*)", input_string, re.IGNORECASE | re.DOTALL)
@@ -169,6 +120,7 @@ def WriteQueryResultToFile(input_string: str) -> str:
             f.write(f"The number of users is: {result}") # Adjusted the output format here
             
         return f"Query result successfully written to {file_path}. Result: {result}"
+    
     except Exception as e:
         return f"Failed to write query result: {str(e)}"
 
@@ -186,6 +138,7 @@ def ReadFile(file_name: str) -> str:
             return f"Error: The file '{file_name}' does not exist at '{path}'."
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
+        
     except Exception as e:
         return f"Error reading file: {str(e)}"
         
@@ -194,41 +147,107 @@ def ReadFile(file_name: str) -> str:
 tools = [sql_tool, WriteQueryResultToFile, ReadFile]
 
 
-# Agent setup
-agent = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=False,
-    handle_parsing_errors=True
-)
+# Try different agent approaches
+def create_agent_with_fallback():
+    """Try different agent creation methods"""
+    
+    # Method 1: Tool calling agent (preferred)
+    try:
+        from langchain.agents import AgentExecutor, create_tool_calling_agent
+        from langchain_core.prompts import ChatPromptTemplate
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful assistant. Use the available tools to answer questions."),
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ])
+        
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        
+        # Set verbose=False to suppress detailed agent execution logs
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False) 
+        
+        print("✅ Tool calling agent created successfully!")
+        return agent_executor
+        
+    except Exception as e:
+        print(f"⚠️ Tool calling agent failed: {e}")
+    
+
+    # Method 2: React agent (fallback)
+    try:
+        from langchain.agents import create_react_agent, AgentExecutor
+        from langchain import hub
+        
+        # Get react prompt
+        prompt = hub.pull("hwchase17/react")
+        agent = create_react_agent(llm, tools, prompt)
+        
+        # Set verbose=False
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+        
+        print("✅ React agent created successfully!")
+        return agent_executor
+        
+    except Exception as e:
+        print(f"⚠️  React agent failed: {e}")
+    
+
+    # Method 3: Legacy agent (last resort)
+    try:
+        from langchain.agents import initialize_agent, AgentType
+        
+        # Set verbose=False
+        agent_executor = initialize_agent(
+            tools=tools,
+            llm=llm,
+            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=False,
+            handle_parsing_errors=True
+        )
+        
+        print("✅ Legacy agent created successfully!")
+        return agent_executor
+        
+    except Exception as e:
+        print(f"❌ Legacy agent failed: {e}")
+        return None
 
 
 # --- Example Usage ---
 if __name__ == "__main__":
     print("\n--- Starting Agent Execution ---")
 
-    try:
-        db_task_prompt = "Find out how many users are in the database and write the result to a file. The SQL query to count users is 'SELECT COUNT(*) FROM users;'. Use the WriteQueryResultToFile tool with the format 'SQL: <your_sql_query>'."
-        
-        response = agent.invoke({"input": db_task_prompt})
-        print(f"Agent Response for DB Query: {response['output']}")
-        
-        # Optional: Read the file to confirm content. Now points to the same directory.
-        print("\n--- Attempting to read the written file ---")
-        read_file_response = agent.invoke({"input": "Read the file 'db_result.txt'"})
-        print(f"Content of db_result.txt: {read_file_response['output']}")
+    agent_executor = create_agent_with_fallback()
 
-    except Exception as e:
-        print(f"\n❌ An error occurred during agent execution: {str(e)}")
-        print(f"Error type: {type(e).__name__}")
-        
-        print("\n--- Falling back to direct tool usage due to agent error ---")
+    query_db = """Find out how many users are in the database and write the result to a file. 
+                 The SQL query to count users is 'SELECT COUNT(*) FROM users;'. 
+                  Use the WriteQueryResultToFile tool with the format 'SQL: <your_sql_query>'.
+              """
+
+    if agent_executor:
         try:
+            response_query = agent_executor.invoke({"input": query_db})
+            print(f"Agent Response for DB Query: {response_query['output']}")
+            
+            # Optional: Read the file to confirm content. Now points to the same directory.
+            print("\n--- Attempting to read the written file ---")
+            read_file_response = agent_executor.invoke({"input": "Read the file 'db_result.txt'"})
+            print(read_file_response['output'])
+
+        except Exception as e:
+            print(f"\n❌ An error occurred during agent execution: {str(e)}")
+            print(f"Error type: {type(e).__name__}")
+            print("\n--- Falling back to direct tool usage due to agent error ---")
+
+    else:
+        try:
+            print("\n--- Direct reading of the written file ---")
             direct_db_result = clean_and_run_sql('SELECT COUNT(*) FROM users;')
             print(f"Direct DB Query (Count Users): {direct_db_result}")
             
             # Manually write to file for fallback, in the same directory as the DB
+            print("\n--- Manually write to file for fallback ---")
             output_dir = os.path.dirname(os.path.abspath(sqlite_db_file))
             os.makedirs(output_dir, exist_ok=True)
             file_path = os.path.join(output_dir, "db_result.txt")

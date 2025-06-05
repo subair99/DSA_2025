@@ -1,10 +1,11 @@
-from langchain.tools import tool
-import requests
 import os
+import requests
 from dotenv import load_dotenv
+from langchain.tools import tool
 import warnings
 
 warnings.filterwarnings("ignore")
+
 load_dotenv()
 
 # Import LLM from model
@@ -16,6 +17,7 @@ try:
 except Exception as e:
     print(f"❌ Error importing LLM: {e}")
     exit(1)
+
 
 # Define tools
 @tool
@@ -48,8 +50,10 @@ def get_weather(city: str) -> str:
     except Exception as e:
         return f"Weather error: {str(e)}"
 
+
 # Create tools list
-tools = [get_weather, calculate]
+tools = [calculate, get_weather]
+
 
 # Try different agent approaches
 def create_agent_with_fallback():
@@ -67,6 +71,7 @@ def create_agent_with_fallback():
         ])
         
         agent = create_tool_calling_agent(llm, tools, prompt)
+        
         # Set verbose=False to suppress detailed agent execution logs
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False) 
         
@@ -76,6 +81,7 @@ def create_agent_with_fallback():
     except Exception as e:
         print(f"⚠️ Tool calling agent failed: {e}")
     
+
     # Method 2: React agent (fallback)
     try:
         from langchain.agents import create_react_agent, AgentExecutor
@@ -84,6 +90,7 @@ def create_agent_with_fallback():
         # Get react prompt
         prompt = hub.pull("hwchase17/react")
         agent = create_react_agent(llm, tools, prompt)
+        
         # Set verbose=False
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
         
@@ -93,6 +100,7 @@ def create_agent_with_fallback():
     except Exception as e:
         print(f"⚠️  React agent failed: {e}")
     
+
     # Method 3: Legacy agent (last resort)
     try:
         from langchain.agents import initialize_agent, AgentType
@@ -114,7 +122,7 @@ def create_agent_with_fallback():
         return None
 
 
-# Main execution
+# --- Example Usage ---
 if __name__ == "__main__":
     # Create agent
     agent_executor = create_agent_with_fallback()
@@ -124,29 +132,27 @@ if __name__ == "__main__":
     if agent_executor:
         try:
             # Test the agent with calculation first
-            print("\n") # Added a newline for cleaner separation
             result_calc = agent_executor.invoke({"input": "Calculate 15 * 7 + 23"})
-            print(f"Calculation: {result_calc['output']}")
+            print(f"\nCalculation: {result_calc['output']}")
+            
             
             # Then test with weather query
             result_weather = agent_executor.invoke({"input": query})
-            print(f"Weather: {result_weather['output']}")
+            print(f"\nWeather: {result_weather['output']}")
             
         except Exception as e:
             print(f"❌ Error running agent: {str(e)}")
             print(f"Error type: {type(e).__name__}")
             
+
             # Fallback to direct tool usage
             print("\n🔄 Falling back to direct tool usage:")
+            
             calc_result_direct = calculate("15 * 7 + 23")
             print(f"Direct Calculation: {calc_result_direct}")
             
             weather_result_direct = get_weather("London")
             print(f"Direct Weather: {weather_result_direct}")
+
     else:
         print("❌ Failed to create any agent. Using tools directly:")
-        calc_result_direct = calculate("15 * 7 + 23")
-        print(f"Direct Calculation: {calc_result_direct}")
-        
-        weather_result_direct = get_weather("London")
-        print(f"Direct Weather: {weather_result_direct}")
